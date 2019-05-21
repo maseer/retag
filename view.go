@@ -36,7 +36,7 @@ type tagView struct {
 	tag  string
 }
 
-func (v tagView) MakeTag(t reflect.Type, fieldIndex int) reflect.StructTag {
+func (v tagView) MakeTag(t reflect.Type, fieldIndex int, fieldString string) reflect.StructTag {
 	const key = "view"
 	field := t.Field(fieldIndex)
 	value := field.Tag.Get(key)

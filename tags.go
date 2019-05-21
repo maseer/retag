@@ -17,7 +17,7 @@ type TagMaker interface {
 	// MakeTag makes tag for the field the fieldIndex in the structureType.
 	// Result should depends on constant parameters of creation of the TagMaker and parameters
 	// passed to the MakeTag. The MakeTag should not produce side effects (like a pure function).
-	MakeTag(structureType reflect.Type, fieldIndex int) reflect.StructTag
+	MakeTag(structureType reflect.Type, fieldIndex int, fieldString string) reflect.StructTag
 }
 
 // Convert converts the given interface p, to a runtime-generated type.
@@ -65,7 +65,7 @@ func ConvertAny(p interface{}, maker TagMaker) interface{} {
 func convert(p interface{}, maker TagMaker, any bool) interface{} {
 	strPtrVal := reflect.ValueOf(p)
 	// TODO(yar): check type (pointer to the structure)
-	res := getType(strPtrVal.Type().Elem(), maker, any)
+	res := getType(strPtrVal.Type().Elem(), "", maker, any)
 	newPtrVal := reflect.NewAt(res.t, unsafe.Pointer(strPtrVal.Pointer()))
 	return newPtrVal.Interface()
 }
@@ -88,7 +88,7 @@ var cache = struct {
 	m: make(map[cacheKey]result),
 }
 
-func getType(structType reflect.Type, maker TagMaker, any bool) result {
+func getType(structType reflect.Type, fname string, maker TagMaker, any bool) result {
 	// TODO(yar): Improve synchronization for cases when one analogue
 	// is produced concurently by different goroutines in the same time
 	key := cacheKey{structType, maker}
@@ -96,7 +96,7 @@ func getType(structType reflect.Type, maker TagMaker, any bool) result {
 	res, ok := cache.m[key]
 	cache.RUnlock()
 	if !ok || (res.hasIface && !any) {
-		res = makeType(structType, maker, any)
+		res = makeType(structType, fname, maker, any)
 		cache.Lock()
 		cache.m[key] = res
 		cache.Unlock()
@@ -104,31 +104,31 @@ func getType(structType reflect.Type, maker TagMaker, any bool) result {
 	return res
 }
 
-func makeType(t reflect.Type, maker TagMaker, any bool) result {
+func makeType(t reflect.Type, fname string, maker TagMaker, any bool) result {
 	switch t.Kind() {
 	case reflect.Struct:
-		return makeStructType(t, maker, any)
+		return makeStructType(t, fname, maker, any)
 	case reflect.Ptr:
-		res := getType(t.Elem(), maker, any)
+		res := getType(t.Elem(), fname, maker, any)
 		if !res.changed {
 			return result{t: t, changed: false}
 		}
 		return result{t: reflect.PtrTo(res.t), changed: true}
 	case reflect.Array:
-		res := getType(t.Elem(), maker, any)
+		res := getType(t.Elem(), fname, maker, any)
 		if !res.changed {
 			return result{t: t, changed: false}
 		}
 		return result{t: reflect.ArrayOf(t.Len(), res.t), changed: true}
 	case reflect.Slice:
-		res := getType(t.Elem(), maker, any)
+		res := getType(t.Elem(), fname, maker, any)
 		if !res.changed {
 			return result{t: t, changed: false}
 		}
 		return result{t: reflect.SliceOf(res.t), changed: true}
 	case reflect.Map:
-		resKey := getType(t.Key(), maker, any)
-		resElem := getType(t.Elem(), maker, any)
+		resKey := getType(t.Key(), fname, maker, any)
+		resElem := getType(t.Elem(), fname, maker, any)
 		if !resKey.changed && !resElem.changed {
 			return result{t: t, changed: false}
 		}
@@ -148,8 +148,15 @@ func makeType(t reflect.Type, maker TagMaker, any bool) result {
 		return result{t: t, changed: false}
 	}
 }
+func getFiledJsonName(field reflect.StructField) string {
+	dv := field.Tag.Get("json")
+	if dv != "" {
+		return dv
+	}
+	return field.Name
+}
 
-func makeStructType(structType reflect.Type, maker TagMaker, any bool) result {
+func makeStructType(structType reflect.Type, FName string, maker TagMaker, any bool) result {
 	if structType.NumField() == 0 {
 		return result{t: structType, changed: false}
 	}
@@ -160,8 +167,10 @@ func makeStructType(structType reflect.Type, maker TagMaker, any bool) result {
 	for i := 0; i < structType.NumField(); i++ {
 		strField := structType.Field(i)
 		if isExported(strField.Name) {
+			fn := FName + "." + getFiledJsonName(strField)
+			fn = strings.TrimLeft(fn, ".")
 			oldType := strField.Type
-			new := getType(oldType, maker, any)
+			new := getType(oldType, fn, maker, any)
 			strField.Type = new.t
 			if oldType != new.t {
 				changed = true
@@ -170,7 +179,7 @@ func makeStructType(structType reflect.Type, maker TagMaker, any bool) result {
 				hasIface = true
 			}
 			oldTag := strField.Tag
-			newTag := maker.MakeTag(structType, i)
+			newTag := maker.MakeTag(structType, i, fn)
 			strField.Tag = newTag
 			if oldTag != newTag {
 				changed = true
